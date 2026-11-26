@@ -15,6 +15,27 @@ impl System {
 #[cfg(feature = "global")]
 static mut LOCK: libc::pthread_mutex_t = libc::PTHREAD_MUTEX_INITIALIZER;
 
+#[cfg(target_os = "android")]
+mod mremap_impl {
+    pub const MREMAP_MAYMOVE: libc::c_int = 1;
+
+    extern "C" {
+        pub fn mremap(
+            addr: *mut libc::c_void,
+            len: libc::size_t,
+            new_len: libc::size_t,
+            flags: libc::c_int,
+            ...
+        ) -> *mut libc::c_void;
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod mremap_impl {
+    pub use libc::mremap;
+    pub use libc::MREMAP_MAYMOVE;
+}
+
 unsafe impl Allocator for System {
     fn alloc(&self, size: usize) -> (*mut u8, usize, u32) {
         let addr = unsafe {
@@ -34,10 +55,14 @@ unsafe impl Allocator for System {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn remap(&self, ptr: *mut u8, oldsize: usize, newsize: usize, can_move: bool) -> *mut u8 {
-        let flags = if can_move { libc::MREMAP_MAYMOVE } else { 0 };
-        let ptr = unsafe { libc::mremap(ptr.cast(), oldsize, newsize, flags) };
+        let flags = if can_move {
+            mremap_impl::MREMAP_MAYMOVE
+        } else {
+            0
+        };
+        let ptr = unsafe { mremap_impl::mremap(ptr.cast(), oldsize, newsize, flags) };
         if ptr == libc::MAP_FAILED {
             ptr::null_mut()
         } else {
@@ -50,10 +75,10 @@ unsafe impl Allocator for System {
         ptr::null_mut()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn free_part(&self, ptr: *mut u8, oldsize: usize, newsize: usize) -> bool {
         unsafe {
-            let rc = libc::mremap(ptr.cast(), oldsize, newsize, 0);
+            let rc = mremap_impl::mremap(ptr.cast(), oldsize, newsize, 0);
             if rc != libc::MAP_FAILED {
                 return true;
             }
